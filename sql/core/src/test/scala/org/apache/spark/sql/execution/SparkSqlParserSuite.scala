@@ -18,7 +18,6 @@
 package org.apache.spark.sql.execution
 
 import scala.collection.JavaConverters._
-
 import org.apache.spark.internal.config.ConfigEntry
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.analysis.{AnalysisTest, UnresolvedAlias, UnresolvedAttribute, UnresolvedFunction, UnresolvedGenerator, UnresolvedHaving, UnresolvedRelation, UnresolvedStar}
@@ -27,8 +26,12 @@ import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.connector.catalog.TableCatalog
 import org.apache.spark.sql.execution.command._
 import org.apache.spark.sql.execution.datasources.{CreateTempViewUsing, RefreshResource}
-import org.apache.spark.sql.internal.StaticSQLConf
+import org.apache.spark.sql.internal.SQLConf.ANSI_ENABLED
+import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.types.StringType
+
+import scala.io.Source
+import scala.util.control.Breaks.{break, breakable}
 
 /**
  * Parser test cases for rules defined in [[SparkSqlParser]].
@@ -465,6 +468,149 @@ class SparkSqlParserSuite extends AnalysisTest {
     Seq(TableCatalog.PROP_OWNER, TableCatalog.PROP_PROVIDER).foreach { reserved =>
       intercept(s"CREATE TABLE target LIKE source TBLPROPERTIES ($reserved='howdy')",
         "reserved")
+    }
+  }
+
+
+  test("presto sql compatibility") {
+    withSQLConf(
+      ANSI_ENABLED.key -> "true",
+      SQLConf.STORE_ASSIGNMENT_POLICY.key -> SQLConf.StoreAssignmentPolicy.ANSI.toString) {
+      val filename = "/Users/jamessun/Desktop/presto-out.txt"
+      val source = Source.fromFile(filename)
+      var sql = ""
+      var total = 0L
+      var fail = 0
+      for (data <- source.getLines) {
+        if (data.equals("-----------------james-------------------")) {
+          breakable {
+            if (sql.equals("")) {
+              break
+            }
+            val s = sql.toString
+            try parser.parsePlan(s)
+            catch {
+              case t: Throwable =>
+                val message = t.getMessage.split("\n")(1)
+                if (message.contains("DataType") && message.contains("is not supported")) {
+                  sql = ""
+                  break
+                }
+                if (message.contains("mismatched input 'varchar'") ||
+                  message.contains("mismatched input 'double'") ||
+                  message.contains("mismatched input 'bigint'") ||
+                  message.contains("mismatched input 'integer'")) {
+                  sql = ""
+                  break
+                }
+                if (message.contains("no viable alternative at input 'xdb.\"")) {
+                  sql = ""
+                  break
+                }
+                if (message.contains("no viable alternative at input 'time'")) {
+                  sql = ""
+                  break
+                }
+                if (sql.toLowerCase().contains("row(")) {
+                  sql = ""
+                  break
+                }
+                if (sql.toLowerCase().contains("$partitions")) {
+                  sql = ""
+                  break
+                }
+                if (message.contains("extraneous input '(' expecting") &&
+                  sql.toLowerCase().contains("create table") &&
+                  sql.toLowerCase().contains("with")) {
+                  sql = ""
+                  break
+                }
+                if (message.contains("->")) {
+                  sql = ""
+                  break
+                }
+                if (sql.toLowerCase().contains("tablesample")) {
+                  sql = ""
+                  break
+                }
+                if (sql.toLowerCase().contains("array[")) {
+                  sql = ""
+                  break
+                }
+                // scalastyle:off println
+                // println(message)
+                // scalastyle:on println
+                fail += 1
+            }
+            sql = ""
+            total += 1
+            if (total % 1000L == 1L) {
+              // scalastyle:off println
+              println(fail * 100 / total)
+              // scalastyle:on println
+            }
+          }
+        }
+        else {
+          sql += " " + data
+        }
+      }
+      source.close()
+    }
+  }
+
+  test("spark sql compatibility") {
+    withSQLConf(
+      ANSI_ENABLED.key -> "true",
+      SQLConf.STORE_ASSIGNMENT_POLICY.key -> SQLConf.StoreAssignmentPolicy.ANSI.toString) {
+      val filename = "/Users/jamessun/Desktop/spark-out-no-deltoid.txt"
+      val source = Source.fromFile(filename)
+      var sql = ""
+      var total = 0L
+      var fail = 0
+      for (data <- source.getLines) {
+        if (data.equals("-----------------james-------------------")) {
+          breakable {
+            if (sql.equals("")) {
+              break
+            }
+            val s = sql.toString
+            try parser.parsePlan(s)
+            catch {
+              case t: Throwable =>
+                val message = t.getMessage.split("\n")(1)
+                if (message.contains("mismatched input ':' expecting")) {
+                  sql = ""
+                  break
+                }
+                if (message.contains("no viable alternative at input 'FROM (")) {
+                  sql = ""
+                  break
+                }
+                if (sql.toLowerCase().contains("transform") &&
+                  sql.toLowerCase().contains("using")) {
+                  sql = ""
+                  break
+                }
+                // scalastyle:off println
+                println(message)
+                // scalastyle:on println
+                fail += 1
+            }
+            sql = ""
+            total += 1
+            if (total % 1000L == 1L) {
+              // scalastyle:off println
+              println(fail * 100 / total)
+              // scalastyle:on println
+            }
+          }
+        }
+        else {
+          sql += " " + data
+        }
+      }
+      source.close()
     }
   }
 }
